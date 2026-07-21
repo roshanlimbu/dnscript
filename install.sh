@@ -162,6 +162,10 @@ if [[ "${AUTO_YES:-0}" -ne 1 ]] && [[ -t 0 ]]; then
         API_DOMAIN="${_API_INPUT:-}"
         read -rp "  Email for SSL certificate (Let's Encrypt): " _EMAIL_INPUT
         SSL_EMAIL="${_EMAIL_INPUT:-}"
+        if [[ -n "$SSL_EMAIL" ]]; then
+            read -rp "  Cloudflare API Token (Optional, for Wildcard SSL): " _CF_TOKEN_INPUT
+            CF_API_TOKEN="${_CF_TOKEN_INPUT:-}"
+        fi
     fi
     echo ""
 fi
@@ -174,6 +178,8 @@ if [[ -n "$FRONTEND_DOMAIN" ]]; then
     echo -e "    API       :  ${CYAN}https://${API_DOMAIN}${NC}  → port ${BACKEND_PORT:-4000}"
     [[ -n "$SSL_EMAIL" ]] && \
     echo -e "    SSL email :  ${CYAN}${SSL_EMAIL}${NC}"
+    [[ -n "$CF_API_TOKEN" ]] && \
+    echo -e "    Wildcard  :  ${CYAN}Enabled via Cloudflare DNS${NC}"
 else
     warn "No domain provided — app will be reachable at IP:port only."
 fi
@@ -702,7 +708,7 @@ if [[ -n "$FRONTEND_DOMAIN" ]]; then
 
     # Install Nginx + Certbot
     info "Installing Nginx and Certbot..."
-    apt-get install -y -qq nginx certbot python3-certbot-nginx
+    apt-get install -y -qq nginx certbot python3-certbot-nginx python3-certbot-dns-cloudflare
     systemctl enable nginx
     systemctl start  nginx
     success "Nginx installed."
@@ -830,14 +836,74 @@ NGINXEOF
         CERTBOT_DOMAINS="-d ${FRONTEND_DOMAIN}"
         [[ -n "$API_DOMAIN" ]] && CERTBOT_DOMAINS="${CERTBOT_DOMAINS} -d ${API_DOMAIN}"
 
-        certbot --nginx \
-            --non-interactive \
-            --agree-tos \
-            --redirect \
-            --email "${SSL_EMAIL}" \
-            ${CERTBOT_DOMAINS} && \
-            success "SSL certificate installed! Auto-renew enabled." || \
-            warn "Certbot failed — DNS may not be propagated yet. Run manually: certbot --nginx -d ${FRONTEND_DOMAIN}"
+        if [[ -n "$CF_API_TOKEN" ]]; then
+            info "Using Cloudflare DNS challenge for wildcard SSL (*.${FRONTEND_DOMAIN})..."
+            # Save Cloudflare credentials securely
+            mkdir -p ~/.secrets/certbot
+            echo "dns_cloudflare_api_token = ${CF_API_TOKEN}" > ~/.secrets/certbot/cloudflare.ini
+            chmod 600 ~/.secrets/certbot/cloudflare.ini
+
+            # Add wildcard to domains
+            CERTBOT_DOMAINS="${CERTBOT_DOMAINS} -d *.${FRONTEND_DOMAIN}"
+
+            certbot certonly \
+                --dns-cloudflare \
+                --dns-cloudflare-credentials ~/.secrets/certbot/cloudflare.ini \
+                --non-interactive \
+                --agree-tos \
+                --email "${SSL_EMAIL}" \
+                ${CERTBOT_DOMAINS} && \
+                success "Wildcard SSL certificate installed! Auto-renew enabled." || \
+                warn "Certbot wildcard failed. Check your Cloudflare API token."
+            
+            # Now configure the wildcard Nginx block to use the certificate
+            CERT_DIR=$(ls -td /etc/letsencrypt/live/*${FRONTEND_DOMAIN}* 2>/dev/null | head -n 1)
+            if [[ -n "$CERT_DIR" ]]; then
+                cat > "/etc/nginx/sites-available/projects_${FRONTEND_DOMAIN}" <<NGINXEOF
+server {
+    listen 80;
+    listen 443 ssl;
+    server_name *.${FRONTEND_DOMAIN};
+
+    ssl_certificate ${CERT_DIR}/fullchain.pem;
+    ssl_certificate_key ${CERT_DIR}/privkey.pem;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+    }
+}
+NGINXEOF
+                nginx -t && systemctl reload nginx
+            fi
+            
+            # We also need to configure the main frontend and API Nginx blocks to use SSL since we used certonly
+            # The easiest way is to let the standard certbot --nginx run to automatically configure the standard blocks
+            # Wait, certbot --nginx can also be run to configure the webserver using existing certificates!
+            certbot --nginx \
+                --non-interactive \
+                --agree-tos \
+                --redirect \
+                --email "${SSL_EMAIL}" \
+                --reinstall \
+                -d "${FRONTEND_DOMAIN}" \
+                $([[ -n "$API_DOMAIN" ]] && echo "-d ${API_DOMAIN}")
+        else
+            certbot --nginx \
+                --non-interactive \
+                --agree-tos \
+                --redirect \
+                --email "${SSL_EMAIL}" \
+                ${CERTBOT_DOMAINS} && \
+                success "SSL certificate installed! Auto-renew enabled." || \
+                warn "Certbot failed — DNS may not be propagated yet. Run manually: certbot --nginx -d ${FRONTEND_DOMAIN}"
+        fi
 
         # Enable auto-renew timer
         systemctl enable certbot.timer 2>/dev/null || \
