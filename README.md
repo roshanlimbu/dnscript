@@ -5,14 +5,14 @@
 ## ⚡ Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/master/install.sh | sudo bash
 ```
 
 ### With options:
 
 ```bash
 # Full install — includes Nginx Proxy Manager + Caddy + DB migrations
-curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/master/install.sh \
   | sudo bash -s -- --with-npm --with-caddy --with-migrations
 ```
 
@@ -139,7 +139,7 @@ cd /opt/deploynest/Deploynestworker && cargo run
 Re-running the script on an existing install is safe — it will `git pull` instead of re-cloning:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/master/install.sh \
   | sudo bash -s -- --with-migrations
 ```
 
@@ -199,4 +199,3 @@ docker ps   # running containers
 ## License
 
 MIT
-
