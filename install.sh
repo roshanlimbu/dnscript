@@ -578,14 +578,12 @@ else
 fi
 
 # =================================================================
-#  STEP 13 — Start Caddy (optional)
+#  STEP 13 — Docker Compose (Caddy)
 # =================================================================
-if [[ "$WITH_CADDY" -eq 1 ]]; then
-    step "13 · Starting Caddy"
+if [[ -f "$WORKER_DIR/compose.yaml" ]] || [[ -f "$WORKER_DIR/docker-compose.yml" ]]; then
+    info "Starting Caddy for dynamic routing..."
     (cd "$WORKER_DIR" && docker compose up -d caddy)
-    success "Caddy started via Docker Compose."
-else
-    warn "Skipping Caddy. Run with --with-caddy to start it."
+    success "Caddy started."
 fi
 
 # =================================================================
@@ -793,6 +791,31 @@ NGINXEOF
                "/etc/nginx/sites-enabled/${API_DOMAIN}"
         success "API vhost created: ${API_DOMAIN}"
     fi
+
+    # ── Wildcard vhost (Projects) ──────────────────────────────────
+    info "Creating Nginx vhost: *.${FRONTEND_DOMAIN} (Projects routing to Caddy on 8000)..."
+    cat > "/etc/nginx/sites-available/projects_${FRONTEND_DOMAIN}" <<NGINXEOF
+server {
+    listen 80;
+    server_name *.${FRONTEND_DOMAIN};
+
+    location / {
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+    }
+}
+NGINXEOF
+
+    ln -sf "/etc/nginx/sites-available/projects_${FRONTEND_DOMAIN}" \
+           "/etc/nginx/sites-enabled/projects_${FRONTEND_DOMAIN}"
+    success "Projects wildcard vhost created."
+
 
     # Remove default nginx site if present
     rm -f /etc/nginx/sites-enabled/default
