@@ -452,6 +452,7 @@ info "Installing PostgreSQL Server..."
 apt-get install -y -qq postgresql postgresql-contrib
 systemctl enable postgresql
 systemctl start postgresql
+sleep 3
 
 info "Configuring PostgreSQL deploynest database..."
 # Generate random password
