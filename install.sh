@@ -77,7 +77,7 @@ step "Configuration"
 
 # Repo URLs — update these to your actual GitHub org/username
 BACKEND_REPO="${BACKEND_REPO:-https://github.com/roshanlimbu/deploynest.git}"
-FRONTEND_REPO="${FRONTEND_REPO:-https://github.com/roshanlimbu/deploynestfrontend.git}"
+FRONTEND_REPO="${FRONTEND_REPO:-https://github.com/roshanlimbu/DN_front.git}"
 WORKER_REPO="${WORKER_REPO:-https://github.com/roshanlimbu/Deploynestworker.git}"
 
 # Where to clone everything
@@ -85,7 +85,7 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/deploynest}"
 
 # Directories
 BACKEND_DIR="$INSTALL_DIR/deploynest"
-FRONTEND_DIR="$INSTALL_DIR/deploynestfrontend"
+FRONTEND_DIR="$INSTALL_DIR/DN_front"
 WORKER_DIR="$INSTALL_DIR/Deploynestworker"
 
 # Flags (can be set via env vars too)
@@ -534,3 +534,4 @@ echo -e "  ${DIM}With NPM:${NC}         sudo bash install.sh --with-npm"
 echo ""
 echo -e "  ${DIM}Note: Log out and back in for Docker group to take effect.${NC}"
 echo ""
+
