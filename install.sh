@@ -834,7 +834,6 @@ NGINXEOF
         info "Requesting Let's Encrypt SSL certificate..."
 
         CERTBOT_DOMAINS="-d ${FRONTEND_DOMAIN}"
-        [[ -n "$API_DOMAIN" ]] && CERTBOT_DOMAINS="${CERTBOT_DOMAINS} -d ${API_DOMAIN}"
 
         if [[ -n "$CF_API_TOKEN" ]]; then
             info "Using Cloudflare DNS challenge for wildcard SSL (*.${FRONTEND_DOMAIN})..."
@@ -845,6 +844,12 @@ NGINXEOF
 
             # Add wildcard to domains
             CERTBOT_DOMAINS="${CERTBOT_DOMAINS} -d *.${FRONTEND_DOMAIN}"
+            
+            # If API_DOMAIN is provided but NOT a subdomain of FRONTEND_DOMAIN, we must add it.
+            # Otherwise, Let's Encrypt will throw a redundancy error.
+            if [[ -n "$API_DOMAIN" && "$API_DOMAIN" != *".${FRONTEND_DOMAIN}" ]]; then
+                CERTBOT_DOMAINS="${CERTBOT_DOMAINS} -d ${API_DOMAIN}"
+            fi
 
             certbot certonly \
                 --dns-cloudflare \
@@ -895,6 +900,8 @@ NGINXEOF
                 -d "${FRONTEND_DOMAIN}" \
                 $([[ -n "$API_DOMAIN" ]] && echo "-d ${API_DOMAIN}")
         else
+            [[ -n "$API_DOMAIN" ]] && CERTBOT_DOMAINS="${CERTBOT_DOMAINS} -d ${API_DOMAIN}"
+            
             certbot --nginx \
                 --non-interactive \
                 --agree-tos \
