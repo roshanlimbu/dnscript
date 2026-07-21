@@ -93,6 +93,11 @@ WITH_CADDY="${WITH_CADDY:-0}"
 WITH_MIGRATIONS="${WITH_MIGRATIONS:-0}"
 WITH_NPM="${WITH_NPM:-0}"    # Nginx Proxy Manager
 
+# Domain config (set interactively below or via env vars)
+FRONTEND_DOMAIN="${FRONTEND_DOMAIN:-}"
+API_DOMAIN="${API_DOMAIN:-}"
+SSL_EMAIL="${SSL_EMAIL:-}"
+
 echo -e "  ${BOLD}Install directory:${NC}  ${CYAN}${INSTALL_DIR}${NC}"
 echo -e "  ${BOLD}Backend repo:${NC}       ${CYAN}${BACKEND_REPO}${NC}"
 echo -e "  ${BOLD}Frontend repo:${NC}      ${CYAN}${FRONTEND_REPO}${NC}"
@@ -109,25 +114,9 @@ while [[ $# -gt 0 ]]; do
         --backend-repo)     BACKEND_REPO="$2"; shift 2 ;;
         --frontend-repo)    FRONTEND_REPO="$2";shift 2 ;;
         --worker-repo)      WORKER_REPO="$2";  shift 2 ;;
-        -h|--help)
-            cat <<'EOF'
-Usage: sudo bash install.sh [options]
-
-Options:
-  --with-caddy          Start the worker Caddy service after install
-  --with-migrations     Run Drizzle DB migrations after install
-  --with-npm            Deploy Nginx Proxy Manager via Docker
-  --install-dir PATH    Where to clone repos (default: /opt/deploynest)
-  --backend-repo URL    Override backend repo URL
-  --frontend-repo URL   Override frontend repo URL
-  --worker-repo URL     Override worker repo URL
-  -h, --help            Show this help
-
-Environment variable overrides:
-  BACKEND_REPO, FRONTEND_REPO, WORKER_REPO, INSTALL_DIR
-  WITH_CADDY=1, WITH_MIGRATIONS=1, WITH_NPM=1
-EOF
-            exit 0 ;;
+        --domain)           FRONTEND_DOMAIN="$2"; shift 2 ;;
+        --api-domain)       API_DOMAIN="$2";      shift 2 ;;
+        --ssl-email)        SSL_EMAIL="$2";        shift 2 ;;
         -y|--yes)           AUTO_YES=1;        shift ;;
         -h|--help)
             cat <<'EOF'
@@ -137,6 +126,9 @@ Options:
   --with-caddy          Start the worker Caddy service after install
   --with-migrations     Run Drizzle DB migrations after install
   --with-npm            Deploy Nginx Proxy Manager via Docker
+  --domain DOMAIN       Frontend domain  (e.g. deploynest.com)
+  --api-domain DOMAIN   Backend API domain (e.g. api.deploynest.com)
+  --ssl-email EMAIL     Email for Let's Encrypt SSL certificate
   --install-dir PATH    Where to clone repos (default: /opt/deploynest)
   --backend-repo URL    Override backend repo URL
   --frontend-repo URL   Override frontend repo URL
@@ -146,6 +138,7 @@ Options:
 
 Environment variable overrides:
   BACKEND_REPO, FRONTEND_REPO, WORKER_REPO, INSTALL_DIR
+  FRONTEND_DOMAIN, API_DOMAIN, SSL_EMAIL
   WITH_CADDY=1, WITH_MIGRATIONS=1, WITH_NPM=1
 EOF
             exit 0 ;;
@@ -155,6 +148,34 @@ EOF
 done
 
 echo -e "  ${DIM}Options: caddy=${WITH_CADDY}  migrations=${WITH_MIGRATIONS}  npm=${WITH_NPM}${NC}"
+echo ""
+
+# ── Domain prompts (interactive only — skipped if piped or --yes) ──
+if [[ "${AUTO_YES:-0}" -ne 1 ]] && [[ -t 0 ]]; then
+    echo -e "  ${BOLD}${CYAN}Domain Setup${NC}  ${DIM}(press Enter to skip and use IP:port instead)${NC}"
+    echo ""
+    read -rp "  Frontend domain  (e.g. deploynest.com or app.deploynest.com): " _DOMAIN_INPUT
+    if [[ -n "$_DOMAIN_INPUT" ]]; then
+        FRONTEND_DOMAIN="$_DOMAIN_INPUT"
+        read -rp "  API subdomain    (e.g. api.deploynest.com) [leave blank to skip]: " _API_INPUT
+        API_DOMAIN="${_API_INPUT:-}"
+        read -rp "  Email for SSL certificate (Let's Encrypt): " _EMAIL_INPUT
+        SSL_EMAIL="${_EMAIL_INPUT:-}"
+    fi
+    echo ""
+fi
+
+# ── Show domain plan ──────────────────────────────────────────────
+if [[ -n "$FRONTEND_DOMAIN" ]]; then
+    echo -e "  ${BOLD}Domain plan:${NC}"
+    echo -e "    Frontend  :  ${CYAN}https://${FRONTEND_DOMAIN}${NC}  → port ${FRONTEND_PORT:-8080}"
+    [[ -n "$API_DOMAIN" ]] && \
+    echo -e "    API       :  ${CYAN}https://${API_DOMAIN}${NC}  → port ${BACKEND_PORT:-4000}"
+    [[ -n "$SSL_EMAIL" ]] && \
+    echo -e "    SSL email :  ${CYAN}${SSL_EMAIL}${NC}"
+else
+    warn "No domain provided — app will be reachable at IP:port only."
+fi
 echo ""
 
 # Auto-confirm if: --yes flag passed, or stdin is not a terminal (e.g. curl | bash)
@@ -502,6 +523,223 @@ else
 fi
 
 # =================================================================
+#  STEP 14 — Systemd Services (Backend + Frontend)
+# =================================================================
+step "14 · Setting Up Services (Backend + Frontend)"
+
+BUN_BIN=$(command -v bun || echo "/usr/local/bin/bun")
+BACKEND_PORT="${BACKEND_PORT:-4000}"
+FRONTEND_PORT="${FRONTEND_PORT:-8080}"
+
+# ── Backend service ────────────────────────────────────────────
+info "Creating systemd service: deploynest-backend (port ${BACKEND_PORT})..."
+cat > /etc/systemd/system/deploynest-backend.service <<SVCEOF
+[Unit]
+Description=DeployNest Backend (Bun)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${BACKEND_DIR}
+ExecStart=${BUN_BIN} run dev
+Restart=always
+RestartSec=5
+Environment=PORT=${BACKEND_PORT}
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deploynest-backend
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+success "Backend service created."
+
+# ── Frontend service ───────────────────────────────────────────
+info "Building frontend for production..."
+(cd "$FRONTEND_DIR" && bun run build) && success "Frontend built." || warn "Frontend build failed — check package.json scripts."
+
+info "Creating systemd service: deploynest-frontend (port ${FRONTEND_PORT})..."
+cat > /etc/systemd/system/deploynest-frontend.service <<SVCEOF
+[Unit]
+Description=DeployNest Frontend (Next.js)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${FRONTEND_DIR}
+ExecStart=${BUN_BIN} run start
+Restart=always
+RestartSec=5
+Environment=PORT=${FRONTEND_PORT}
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deploynest-frontend
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+success "Frontend service created."
+
+# ── Enable + start both ────────────────────────────────────────
+systemctl daemon-reload
+
+systemctl enable deploynest-backend
+systemctl start  deploynest-backend
+success "Backend started  → http://localhost:${BACKEND_PORT}"
+
+systemctl enable deploynest-frontend
+systemctl start  deploynest-frontend
+success "Frontend started → http://localhost:${FRONTEND_PORT}"
+
+# =================================================================
+#  STEP 15 — Nginx Vhost + SSL (if domain provided)
+# =================================================================
+if [[ -n "$FRONTEND_DOMAIN" ]]; then
+    step "15 · Nginx + SSL for ${FRONTEND_DOMAIN}"
+
+    # Install Nginx + Certbot
+    info "Installing Nginx and Certbot..."
+    apt-get install -y -qq nginx certbot python3-certbot-nginx
+    systemctl enable nginx
+    systemctl start  nginx
+    success "Nginx installed."
+
+    # ── Frontend vhost ────────────────────────────────────────────
+    info "Creating Nginx vhost: ${FRONTEND_DOMAIN} → port ${FRONTEND_PORT}..."
+    cat > "/etc/nginx/sites-available/${FRONTEND_DOMAIN}" <<NGINXEOF
+server {
+    listen 80;
+    server_name ${FRONTEND_DOMAIN};
+
+    client_max_body_size 64M;
+    charset utf-8;
+
+    # Gzip
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml text/javascript;
+
+    # Security headers
+    add_header X-Frame-Options        "SAMEORIGIN"  always;
+    add_header X-Content-Type-Options "nosniff"     always;
+    add_header Referrer-Policy        "strict-origin-when-cross-origin" always;
+
+    location / {
+        proxy_pass         http://127.0.0.1:${FRONTEND_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+        proxy_read_timeout 60s;
+    }
+
+    # Next.js static assets
+    location /_next/static/ {
+        proxy_pass http://127.0.0.1:${FRONTEND_PORT};
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    access_log /var/log/nginx/${FRONTEND_DOMAIN}-access.log;
+    error_log  /var/log/nginx/${FRONTEND_DOMAIN}-error.log;
+}
+NGINXEOF
+
+    ln -sf "/etc/nginx/sites-available/${FRONTEND_DOMAIN}" \
+           "/etc/nginx/sites-enabled/${FRONTEND_DOMAIN}"
+    success "Frontend vhost created: ${FRONTEND_DOMAIN}"
+
+    # ── API subdomain vhost ───────────────────────────────────────
+    if [[ -n "$API_DOMAIN" ]]; then
+        info "Creating Nginx vhost: ${API_DOMAIN} → port ${BACKEND_PORT}..."
+        cat > "/etc/nginx/sites-available/${API_DOMAIN}" <<NGINXEOF
+server {
+    listen 80;
+    server_name ${API_DOMAIN};
+
+    client_max_body_size 64M;
+    charset utf-8;
+
+    # CORS headers
+    add_header Access-Control-Allow-Origin  "${FRONTEND_DOMAIN}" always;
+    add_header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept" always;
+
+    location / {
+        if (\$request_method = 'OPTIONS') {
+            return 204;
+        }
+        proxy_pass         http://127.0.0.1:${BACKEND_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Real-IP \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+        proxy_read_timeout 120s;
+    }
+
+    access_log /var/log/nginx/${API_DOMAIN}-access.log;
+    error_log  /var/log/nginx/${API_DOMAIN}-error.log;
+}
+NGINXEOF
+
+        ln -sf "/etc/nginx/sites-available/${API_DOMAIN}" \
+               "/etc/nginx/sites-enabled/${API_DOMAIN}"
+        success "API vhost created: ${API_DOMAIN}"
+    fi
+
+    # Remove default nginx site if present
+    rm -f /etc/nginx/sites-enabled/default
+
+    nginx -t && systemctl reload nginx
+    success "Nginx reloaded."
+
+    # ── SSL via Certbot ───────────────────────────────────────────
+    if [[ -n "$SSL_EMAIL" ]]; then
+        info "Requesting Let's Encrypt SSL certificate..."
+
+        CERTBOT_DOMAINS="-d ${FRONTEND_DOMAIN}"
+        [[ -n "$API_DOMAIN" ]] && CERTBOT_DOMAINS="${CERTBOT_DOMAINS} -d ${API_DOMAIN}"
+
+        certbot --nginx \
+            --non-interactive \
+            --agree-tos \
+            --redirect \
+            --email "${SSL_EMAIL}" \
+            ${CERTBOT_DOMAINS} && \
+            success "SSL certificate installed! Auto-renew enabled." || \
+            warn "Certbot failed — DNS may not be propagated yet. Run manually: certbot --nginx -d ${FRONTEND_DOMAIN}"
+
+        # Enable auto-renew timer
+        systemctl enable certbot.timer 2>/dev/null || \
+            (crontab -l 2>/dev/null; echo "0 12 * * * certbot renew --quiet") | crontab -
+    else
+        warn "No SSL email provided — skipping HTTPS. Add SSL later with:"
+        warn "  certbot --nginx -d ${FRONTEND_DOMAIN}"
+    fi
+
+else
+    info "No domain configured. Skipping Nginx vhost setup."
+    warn "If using Nginx Proxy Manager, add proxy hosts:"
+    warn "  yourdomain.com      → localhost:${FRONTEND_PORT}"
+    warn "  api.yourdomain.com  → localhost:${BACKEND_PORT}"
+fi
+
+# =================================================================
 #  DONE — Summary
 # =================================================================
 echo ""
@@ -515,17 +753,29 @@ echo -e "  ${BOLD}Bun:${NC}                $(bun --version 2>/dev/null || echo '
 echo -e "  ${BOLD}Cargo:${NC}              $(cargo --version 2>/dev/null || echo 'installed')"
 echo -e "  ${BOLD}PHP:${NC}                $(php --version 2>/dev/null | head -1 || echo 'installed')"
 echo ""
+echo -e "  ${BOLD}${GREEN}Services Running:${NC}"
+if [[ -n "$FRONTEND_DOMAIN" ]]; then
+    echo -e "  ${DIM}Frontend:${NC}  ${CYAN}https://${FRONTEND_DOMAIN}${NC}"
+    [[ -n "$API_DOMAIN" ]] && \
+    echo -e "  ${DIM}API:${NC}       ${CYAN}https://${API_DOMAIN}${NC}"
+else
+    echo -e "  ${DIM}Frontend:${NC}  http://YOUR_IP:${FRONTEND_PORT}   (systemd: deploynest-frontend)"
+    echo -e "  ${DIM}Backend:${NC}   http://YOUR_IP:${BACKEND_PORT}    (systemd: deploynest-backend)"
+fi
+echo ""
 echo -e "  ${YELLOW}${BOLD}Next steps:${NC}"
 echo -e "  ${DIM}1.${NC}  Edit backend .env  →  ${CYAN}nano ${BACKEND_DIR}/.env${NC}"
 echo -e "  ${DIM}2.${NC}  Edit worker .env   →  ${CYAN}nano ${WORKER_DIR}/.env${NC}"
-if [[ "$WITH_NPM" -eq 1 ]]; then
+if [[ "${WITH_NPM:-0}" -eq 1 ]]; then
     echo -e "  ${DIM}3.${NC}  Open NPM admin     →  ${CYAN}http://YOUR_IP:81${NC}  (admin@example.com / changeme)"
 fi
 echo -e ""
-echo -e "  ${BOLD}Dev commands:${NC}"
-echo -e "  ${DIM}Backend:${NC}   cd ${BACKEND_DIR}  && bun run dev"
-echo -e "  ${DIM}Frontend:${NC}  cd ${FRONTEND_DIR} && bun run dev"
-echo -e "  ${DIM}Worker:${NC}    cd ${WORKER_DIR}   && cargo run"
+echo -e "  ${BOLD}Service management:${NC}"
+echo -e "  ${DIM}Status:${NC}   sudo systemctl status deploynest-backend deploynest-frontend"
+echo -e "  ${DIM}Logs:${NC}     sudo journalctl -u deploynest-backend -f"
+echo -e "           sudo journalctl -u deploynest-frontend -f"
+echo -e "  ${DIM}Restart:${NC}  sudo systemctl restart deploynest-backend"
+echo -e "           sudo systemctl restart deploynest-frontend"
 echo -e ""
 echo -e "  ${BOLD}Re-run options:${NC}"
 echo -e "  ${DIM}With migrations:${NC}  sudo bash install.sh --with-migrations"
@@ -535,3 +785,44 @@ echo ""
 echo -e "  ${DIM}Note: Log out and back in for Docker group to take effect.${NC}"
 echo ""
 
+
+
+echo ""
+echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BOLD}${GREEN}  ✅  DeployNest Installation Complete!${NC}"
+echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "  ${BOLD}Install Directory:${NC}   ${INSTALL_DIR}"
+echo -e "  ${BOLD}Docker:${NC}             $(docker --version 2>/dev/null || echo 'installed')"
+echo -e "  ${BOLD}Bun:${NC}                $(bun --version 2>/dev/null || echo 'installed')"
+echo -e "  ${BOLD}Cargo:${NC}              $(cargo --version 2>/dev/null || echo 'installed')"
+echo -e "  ${BOLD}PHP:${NC}                $(php --version 2>/dev/null | head -1 || echo 'installed')"
+echo ""
+echo -e "  ${BOLD}${GREEN}Services Running:${NC}"
+echo -e "  ${DIM}Backend:${NC}   http://localhost:${BACKEND_PORT:-4000}   (systemd: deploynest-backend)"
+echo -e "  ${DIM}Frontend:${NC}  http://localhost:${FRONTEND_PORT:-8080}  (systemd: deploynest-frontend)"
+echo ""
+echo -e "  ${YELLOW}${BOLD}Next steps:${NC}"
+echo -e "  ${DIM}1.${NC}  Edit backend .env  →  ${CYAN}nano ${BACKEND_DIR}/.env${NC}"
+echo -e "  ${DIM}2.${NC}  Edit worker .env   →  ${CYAN}nano ${WORKER_DIR}/.env${NC}"
+if [[ "${WITH_NPM:-0}" -eq 1 ]]; then
+    echo -e "  ${DIM}3.${NC}  Open NPM admin     →  ${CYAN}http://YOUR_IP:81${NC}  (admin@example.com / changeme)"
+    echo -e "  ${DIM}4.${NC}  In NPM add hosts:"
+    echo -e "          yourdomain.com      → localhost:${FRONTEND_PORT:-8080}"
+    echo -e "          api.yourdomain.com  → localhost:${BACKEND_PORT:-4000}"
+fi
+echo -e ""
+echo -e "  ${BOLD}Service management:${NC}"
+echo -e "  ${DIM}Status:${NC}   sudo systemctl status deploynest-backend deploynest-frontend"
+echo -e "  ${DIM}Logs:${NC}     sudo journalctl -u deploynest-backend -f"
+echo -e "           sudo journalctl -u deploynest-frontend -f"
+echo -e "  ${DIM}Restart:${NC}  sudo systemctl restart deploynest-backend"
+echo -e "           sudo systemctl restart deploynest-frontend"
+echo -e ""
+echo -e "  ${BOLD}Re-run options:${NC}"
+echo -e "  ${DIM}With migrations:${NC}  sudo bash install.sh --with-migrations"
+echo -e "  ${DIM}With Caddy:${NC}       sudo bash install.sh --with-caddy"
+echo -e "  ${DIM}With NPM:${NC}         sudo bash install.sh --with-npm"
+echo ""
+echo -e "  ${DIM}Note: Log out and back in for Docker group to take effect.${NC}"
+echo ""
