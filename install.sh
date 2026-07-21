@@ -498,22 +498,41 @@ else
 fi
 
 # ── Worker .env ────────────────────────────────────────────────
-if [[ -f "$WORKER_DIR/.env.example" && ! -f "$WORKER_DIR/.env" ]]; then
-    cp "$WORKER_DIR/.env.example" "$WORKER_DIR/.env"
-    sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|g" "$WORKER_DIR/.env"
-    success "Created and configured worker .env"
-elif [[ ! -f "$WORKER_DIR/.env" ]]; then
+WORKER_BASE_DOMAIN="${FRONTEND_DOMAIN:-localhost}"
+WORKER_SCHEME="http"
+[[ -n "$FRONTEND_DOMAIN" ]] && WORKER_SCHEME="https"
+
+if [[ ! -f "$WORKER_DIR/.env" ]]; then
     cat > "$WORKER_DIR/.env" <<EOF
 DATABASE_URL=${DATABASE_URL}
-PORT=3001
+WORKSPACE_DIR=/tmp/deploynest
+POLL_INTERVAL_SECONDS=5
+CONTAINER_PORT=3000
+PORT_START=4001
+PORT_END=9000
+CADDY_ADMIN_URL=http://127.0.0.1:2019
+CADDY_SERVER=srv0
+CADDY_UPSTREAM_HOST=host.docker.internal
+BASE_DOMAIN=${WORKER_BASE_DOMAIN}
+PUBLIC_SCHEME=${WORKER_SCHEME}
 EOF
     success "Generated default worker .env"
 else
-    warn "Keeping existing worker .env but forcefully updating DATABASE_URL"
+    warn "Keeping existing worker .env but forcefully updating DATABASE_URL and BASE_DOMAIN"
     if grep -q "^DATABASE_URL=" "$WORKER_DIR/.env"; then
         sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|g" "$WORKER_DIR/.env"
     else
         echo "DATABASE_URL=${DATABASE_URL}" >> "$WORKER_DIR/.env"
+    fi
+    if grep -q "^BASE_DOMAIN=" "$WORKER_DIR/.env"; then
+        sed -i "s|^BASE_DOMAIN=.*|BASE_DOMAIN=${WORKER_BASE_DOMAIN}|g" "$WORKER_DIR/.env"
+    else
+        echo "BASE_DOMAIN=${WORKER_BASE_DOMAIN}" >> "$WORKER_DIR/.env"
+    fi
+    if grep -q "^PUBLIC_SCHEME=" "$WORKER_DIR/.env"; then
+        sed -i "s|^PUBLIC_SCHEME=.*|PUBLIC_SCHEME=${WORKER_SCHEME}|g" "$WORKER_DIR/.env"
+    else
+        echo "PUBLIC_SCHEME=${WORKER_SCHEME}" >> "$WORKER_DIR/.env"
     fi
 fi
 
@@ -635,16 +654,47 @@ SVCEOF
 
 success "Frontend service created."
 
-# ── Enable + start both ────────────────────────────────────────
+# ── Worker service ─────────────────────────────────────────────
+WORKER_BIN="${WORKER_DIR}/target/release/deploynestworker"
+info "Creating systemd service: deploynest-worker..."
+cat > /etc/systemd/system/deploynest-worker.service <<SVCEOF
+[Unit]
+Description=DeployNest Worker (Rust)
+After=network.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${WORKER_DIR}
+ExecStart=${WORKER_BIN}
+Restart=always
+RestartSec=5
+EnvironmentFile=${WORKER_DIR}/.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deploynest-worker
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+success "Worker service created."
+
+# ── Enable + start all ─────────────────────────────────────────
 systemctl daemon-reload
 
 systemctl enable deploynest-backend
-systemctl start  deploynest-backend
+systemctl restart deploynest-backend
 success "Backend started  → http://localhost:${BACKEND_PORT}"
 
 systemctl enable deploynest-frontend
-systemctl start  deploynest-frontend
+systemctl restart deploynest-frontend
 success "Frontend started → http://localhost:${FRONTEND_PORT}"
+
+systemctl enable deploynest-worker
+systemctl restart deploynest-worker
+success "Worker started   (picks up deployment jobs)"
 
 # =================================================================
 #  STEP 15 — Nginx Vhost + SSL (if domain provided)
@@ -818,6 +868,7 @@ echo -e "  ${DIM}Logs:${NC}     sudo journalctl -u deploynest-backend -f"
 echo -e "           sudo journalctl -u deploynest-frontend -f"
 echo -e "  ${DIM}Restart:${NC}  sudo systemctl restart deploynest-backend"
 echo -e "           sudo systemctl restart deploynest-frontend"
+echo -e "           sudo systemctl restart deploynest-worker"
 echo -e ""
 echo -e "  ${BOLD}Re-run options:${NC}"
 echo -e "  ${DIM}With migrations:${NC}  sudo bash install.sh --with-migrations"
@@ -840,10 +891,11 @@ echo -e "  ${BOLD}Bun:${NC}                $(bun --version 2>/dev/null || echo '
 echo -e "  ${BOLD}Cargo:${NC}              $(cargo --version 2>/dev/null || echo 'installed')"
 echo -e "  ${BOLD}PHP:${NC}                $(php --version 2>/dev/null | head -1 || echo 'installed')"
 echo ""
-echo -e "  ${BOLD}${GREEN}Services Running:${NC}"
-echo -e "  ${DIM}Backend:${NC}   http://localhost:${BACKEND_PORT:-4000}   (systemd: deploynest-backend)"
-echo -e "  ${DIM}Frontend:${NC}  http://localhost:${FRONTEND_PORT:-8080}  (systemd: deploynest-frontend)"
-echo ""
+  echo -e "  ${BOLD}${GREEN}Services Running:${NC}"
+  echo -e "  ${DIM}Backend:${NC}   http://localhost:${BACKEND_PORT:-4000}   (systemd: deploynest-backend)"
+  echo -e "  ${DIM}Frontend:${NC}  http://localhost:${FRONTEND_PORT:-8080}  (systemd: deploynest-frontend)"
+  echo -e "  ${DIM}Worker:${NC}    Rust worker polling DB every 5s            (systemd: deploynest-worker)"
+  echo ""
 echo -e "  ${YELLOW}${BOLD}Next steps:${NC}"
 echo -e "  ${DIM}1.${NC}  Edit backend .env  →  ${CYAN}nano ${BACKEND_DIR}/.env${NC}"
 echo -e "  ${DIM}2.${NC}  Edit worker .env   →  ${CYAN}nano ${WORKER_DIR}/.env${NC}"
@@ -868,3 +920,4 @@ echo -e "  ${DIM}With NPM:${NC}         sudo bash install.sh --with-npm"
 echo ""
 echo -e "  ${DIM}Note: Log out and back in for Docker group to take effect.${NC}"
 echo ""
+cho ""
