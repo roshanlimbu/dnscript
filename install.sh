@@ -443,44 +443,80 @@ clone_or_pull "$FRONTEND_REPO" "$FRONTEND_DIR"
 clone_or_pull "$WORKER_REPO"   "$WORKER_DIR"
 
 # =================================================================
-#  STEP 10 — Environment Files
+#  STEP 10 — Database & Environment Setup
 # =================================================================
-step "10 · Environment Files"
+step "10 · Database & Environment Setup"
 
-copy_if_missing() {
-    local src="$1" dst="$2"
-    if [[ -f "$dst" ]]; then
-        warn "Keeping existing: ${dst#$INSTALL_DIR/}"
-    elif [[ -f "$src" ]]; then
-        cp "$src" "$dst"
-        success "Created: ${dst#$INSTALL_DIR/}"
-    else
-        warn "No .env.example found at ${src#$INSTALL_DIR/} — skipping."
-    fi
-}
+info "Installing MariaDB Server..."
+apt-get install -y -qq mariadb-server
+systemctl enable mariadb
+systemctl start mariadb
 
-# Backend .env
-if [[ ! -f "$BACKEND_DIR/.env" ]]; then
-    if [[ -f "$BACKEND_DIR/.env.example" ]]; then
-        cp "$BACKEND_DIR/.env.example" "$BACKEND_DIR/.env"
-    else
-        cat > "$BACKEND_DIR/.env" <<'EOF'
-DATABASE_URL=postgresql://localhost:5432/deploynest
-JWT_SECRET=change-me-before-production
-PORT=3000
+info "Configuring MariaDB deploynest database..."
+# Generate random password
+DB_PASS=$(openssl rand -hex 16)
+DB_USER="deploynest"
+DB_NAME="deploynest"
+
+mysql -u root -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;"
+mysql -u root -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+mysql -u root -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+mysql -u root -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';"
+mysql -u root -e "FLUSH PRIVILEGES;"
+
+success "Database '${DB_NAME}' created with user '${DB_USER}'."
+
+DATABASE_URL="mysql://${DB_USER}:${DB_PASS}@127.0.0.1:3306/${DB_NAME}"
+JWT_SECRET=$(openssl rand -hex 32)
+
+# ── Backend .env ───────────────────────────────────────────────
+if [[ -f "$BACKEND_DIR/.env.example" && ! -f "$BACKEND_DIR/.env" ]]; then
+    cp "$BACKEND_DIR/.env.example" "$BACKEND_DIR/.env"
+    sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|g" "$BACKEND_DIR/.env"
+    sed -i "s|^DB_HOST=.*|DB_HOST=127.0.0.1|g" "$BACKEND_DIR/.env"
+    sed -i "s|^DB_DATABASE=.*|DB_DATABASE=${DB_NAME}|g" "$BACKEND_DIR/.env"
+    sed -i "s|^DB_USERNAME=.*|DB_USERNAME=${DB_USER}|g" "$BACKEND_DIR/.env"
+    sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=${DB_PASS}|g" "$BACKEND_DIR/.env"
+    sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${JWT_SECRET}|g" "$BACKEND_DIR/.env"
+    success "Created and configured backend .env"
+elif [[ ! -f "$BACKEND_DIR/.env" ]]; then
+    cat > "$BACKEND_DIR/.env" <<EOF
+DATABASE_URL=${DATABASE_URL}
+JWT_SECRET=${JWT_SECRET}
+PORT=${BACKEND_PORT:-4000}
 NODE_ENV=production
 EOF
-    fi
-    success "Created deploynest/.env — edit DATABASE_URL and JWT_SECRET!"
+    success "Generated default backend .env"
 else
-    warn "Keeping existing deploynest/.env"
+    warn "Keeping existing backend .env"
 fi
 
-# Worker .env
-copy_if_missing "$WORKER_DIR/.env.example" "$WORKER_DIR/.env"
+# ── Worker .env ────────────────────────────────────────────────
+if [[ -f "$WORKER_DIR/.env.example" && ! -f "$WORKER_DIR/.env" ]]; then
+    cp "$WORKER_DIR/.env.example" "$WORKER_DIR/.env"
+    sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|g" "$WORKER_DIR/.env"
+    success "Created and configured worker .env"
+elif [[ ! -f "$WORKER_DIR/.env" ]]; then
+    cat > "$WORKER_DIR/.env" <<EOF
+DATABASE_URL=${DATABASE_URL}
+PORT=3001
+EOF
+    success "Generated default worker .env"
+else
+    warn "Keeping existing worker .env"
+fi
 
-# Frontend .env
-copy_if_missing "$FRONTEND_DIR/.env.example" "$FRONTEND_DIR/.env"
+# ── Frontend .env ──────────────────────────────────────────────
+if [[ -f "$FRONTEND_DIR/.env.example" && ! -f "$FRONTEND_DIR/.env" ]]; then
+    cp "$FRONTEND_DIR/.env.example" "$FRONTEND_DIR/.env"
+    # Auto-inject backend URL if known
+    API_URL="http://127.0.0.1:${BACKEND_PORT:-4000}"
+    [[ -n "$API_DOMAIN" ]] && API_URL="https://${API_DOMAIN}"
+    sed -i "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=${API_URL}|g" "$FRONTEND_DIR/.env"
+    success "Created frontend .env"
+else
+    warn "Keeping existing frontend .env (or no .env.example found)"
+fi
 
 # =================================================================
 #  STEP 11 — Install Dependencies
@@ -826,3 +862,4 @@ echo -e "  ${DIM}With NPM:${NC}         sudo bash install.sh --with-npm"
 echo ""
 echo -e "  ${DIM}Note: Log out and back in for Docker group to take effect.${NC}"
 echo ""
+
