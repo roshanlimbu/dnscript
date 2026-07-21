@@ -448,26 +448,25 @@ clone_or_pull "$WORKER_REPO"   "$WORKER_DIR"
 # =================================================================
 step "10 · Database & Environment Setup"
 
-info "Installing MariaDB Server..."
-apt-get install -y -qq mariadb-server
-systemctl enable mariadb
-systemctl start mariadb
+info "Installing PostgreSQL Server..."
+apt-get install -y -qq postgresql postgresql-contrib
+systemctl enable postgresql
+systemctl start postgresql
 
-info "Configuring MariaDB deploynest database..."
+info "Configuring PostgreSQL deploynest database..."
 # Generate random password
 DB_PASS=$(openssl rand -hex 16)
 DB_USER="deploynest"
 DB_NAME="deploynest"
 
-mysql -u root -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;"
-mysql -u root -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-mysql -u root -e "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-mysql -u root -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';"
-mysql -u root -e "FLUSH PRIVILEGES;"
+sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME};" || true
+sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH ENCRYPTED PASSWORD '${DB_PASS}';" || sudo -u postgres psql -c "ALTER USER ${DB_USER} WITH ENCRYPTED PASSWORD '${DB_PASS}';"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
+sudo -u postgres psql -d ${DB_NAME} -c "ALTER SCHEMA public OWNER TO ${DB_USER};"
 
 success "Database '${DB_NAME}' created with user '${DB_USER}'."
 
-DATABASE_URL="mysql://${DB_USER}:${DB_PASS}@127.0.0.1:3306/${DB_NAME}"
+DATABASE_URL="postgres://${DB_USER}:${DB_PASS}@127.0.0.1:5432/${DB_NAME}"
 JWT_SECRET=$(openssl rand -hex 32)
 
 # ── Backend .env ───────────────────────────────────────────────
@@ -489,7 +488,12 @@ NODE_ENV=production
 EOF
     success "Generated default backend .env"
 else
-    warn "Keeping existing backend .env"
+    warn "Keeping existing backend .env but forcefully updating DATABASE_URL"
+    if grep -q "^DATABASE_URL=" "$BACKEND_DIR/.env"; then
+        sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|g" "$BACKEND_DIR/.env"
+    else
+        echo "DATABASE_URL=${DATABASE_URL}" >> "$BACKEND_DIR/.env"
+    fi
 fi
 
 # ── Worker .env ────────────────────────────────────────────────
@@ -504,7 +508,12 @@ PORT=3001
 EOF
     success "Generated default worker .env"
 else
-    warn "Keeping existing worker .env"
+    warn "Keeping existing worker .env but forcefully updating DATABASE_URL"
+    if grep -q "^DATABASE_URL=" "$WORKER_DIR/.env"; then
+        sed -i "s|^DATABASE_URL=.*|DATABASE_URL=${DATABASE_URL}|g" "$WORKER_DIR/.env"
+    else
+        echo "DATABASE_URL=${DATABASE_URL}" >> "$WORKER_DIR/.env"
+    fi
 fi
 
 # ── Frontend .env ──────────────────────────────────────────────
@@ -858,4 +867,3 @@ echo -e "  ${DIM}With NPM:${NC}         sudo bash install.sh --with-npm"
 echo ""
 echo -e "  ${DIM}Note: Log out and back in for Docker group to take effect.${NC}"
 echo ""
-
