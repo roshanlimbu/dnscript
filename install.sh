@@ -18,6 +18,7 @@
 # =================================================================
 
 set -euo pipefail
+export COMPOSER_ALLOW_SUPERUSER=1
 
 # ── Colors ────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -680,12 +681,7 @@ server {
         proxy_read_timeout 60s;
     }
 
-    # Next.js static assets
-    location /_next/static/ {
-        proxy_pass http://127.0.0.1:${FRONTEND_PORT};
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
+
 
     access_log /var/log/nginx/${FRONTEND_DOMAIN}-access.log;
     error_log  /var/log/nginx/${FRONTEND_DOMAIN}-error.log;
