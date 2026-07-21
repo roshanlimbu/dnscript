@@ -128,6 +128,27 @@ Environment variable overrides:
   WITH_CADDY=1, WITH_MIGRATIONS=1, WITH_NPM=1
 EOF
             exit 0 ;;
+        -y|--yes)           AUTO_YES=1;        shift ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: sudo bash install.sh [options]
+
+Options:
+  --with-caddy          Start the worker Caddy service after install
+  --with-migrations     Run Drizzle DB migrations after install
+  --with-npm            Deploy Nginx Proxy Manager via Docker
+  --install-dir PATH    Where to clone repos (default: /opt/deploynest)
+  --backend-repo URL    Override backend repo URL
+  --frontend-repo URL   Override frontend repo URL
+  --worker-repo URL     Override worker repo URL
+  -y, --yes             Skip confirmation prompt (auto-yes)
+  -h, --help            Show this help
+
+Environment variable overrides:
+  BACKEND_REPO, FRONTEND_REPO, WORKER_REPO, INSTALL_DIR
+  WITH_CADDY=1, WITH_MIGRATIONS=1, WITH_NPM=1
+EOF
+            exit 0 ;;
         *)
             echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -135,9 +156,15 @@ done
 
 echo -e "  ${DIM}Options: caddy=${WITH_CADDY}  migrations=${WITH_MIGRATIONS}  npm=${WITH_NPM}${NC}"
 echo ""
-read -rp "  Proceed with installation? [Y/n]: " CONFIRM
-CONFIRM="${CONFIRM:-Y}"
-[[ "$CONFIRM" =~ ^[Yy]$ ]] || { warn "Aborted."; exit 0; }
+
+# Auto-confirm if: --yes flag passed, or stdin is not a terminal (e.g. curl | bash)
+if [[ "${AUTO_YES:-0}" -eq 1 ]] || [[ ! -t 0 ]]; then
+    warn "Non-interactive mode detected — auto-confirming."
+else
+    read -rp "  Proceed with installation? [Y/n]: " CONFIRM
+    CONFIRM="${CONFIRM:-Y}"
+    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { warn "Aborted."; exit 0; }
+fi
 
 # =================================================================
 #  STEP 1 — System Update & Core Packages
