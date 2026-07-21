@@ -4,16 +4,24 @@
 
 ## ⚡ Quick Install
 
+The script can be run interactively to prompt you for domain setup, or you can pass the flags directly.
+
+### Interactive Mode (Recommended)
+If you run the script normally, it will prompt you for your frontend and API domains and configure them automatically:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/master/install.sh | sudo bash
+bash <(curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/master/install.sh)
 ```
+*(Note: We use `bash <(...)` instead of piping so the interactive prompts work properly!)*
 
-### With options:
+### Non-Interactive (One-liner)
+To pass the domains directly and skip the prompts:
 
 ```bash
-# Full install — includes Nginx Proxy Manager + Caddy + DB migrations
-curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/master/install.sh \
-  | sudo bash -s -- --with-npm --with-caddy --with-migrations
+curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/master/install.sh | sudo bash -s -- \
+  --domain deploynest.yourdomain.com \
+  --api-domain api.deploynest.yourdomain.com \
+  --ssl-email your@email.com
 ```
 
 ---
@@ -34,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/master/install
 | Repo | Destination |
 |------|-------------|
 | `roshanlimbu/deploynest` | `/opt/deploynest/deploynest` |
-| `roshanlimbu/deploynestfrontend` | `/opt/deploynest/deploynestfrontend` |
+| `roshanlimbu/DN_front` | `/opt/deploynest/DN_front` |
 | `roshanlimbu/Deploynestworker` | `/opt/deploynest/Deploynestworker` |
 
 ---
@@ -55,6 +63,9 @@ curl -fsSL https://raw.githubusercontent.com/roshanlimbu/dnscript/master/install
 Usage: sudo bash install.sh [options]
 
 Options:
+  --domain DOMAIN       Frontend domain (e.g. deploynest.com)
+  --api-domain DOMAIN   Backend API domain (e.g. api.deploynest.com)
+  --ssl-email EMAIL     Email for Let's Encrypt SSL notifications
   --with-npm            Deploy Nginx Proxy Manager via Docker (port 81)
   --with-caddy          Start the worker Caddy service after install
   --with-migrations     Run Drizzle DB migrations after install
@@ -199,3 +210,4 @@ docker ps   # running containers
 ## License
 
 MIT
+
